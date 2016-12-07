@@ -65,7 +65,7 @@ type alias Drag =
 init : ( ObjectTree, Cmd Msg )
 init =
   let
-    node id = ObjectNode ("New Node " ++ (toString id)) (NodeIndex id) 200 50 (Position 0 0) (rgb 0 (50*id % 256) 0)
+    node id = ObjectNode ("New Node " ++ (toString id)) (NodeIndex id) 200 50 (Position 10 10) (rgb 0 (50*id % 256) 0)
   in
     ( { nodes = reposition (List.map node (List.range 0 100))
       , position = Position 0 0
@@ -257,8 +257,7 @@ buildNodeView node drag =
           (mouseEvents ++
           [ class "nodeghost"
           , style
-            [
-            , "width" => px node.width
+            [ "width" => px node.width
             , "height" => px node.height
             , "left" => px node.position.x
             , "top" => px node.position.y
