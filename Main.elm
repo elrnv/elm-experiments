@@ -1,5 +1,4 @@
 import Html exposing (..)
-import Debug exposing (log)
 import Html.Lazy exposing (..)
 import Html.Attributes exposing (..)
 import Html.Events exposing (on)
@@ -7,8 +6,11 @@ import Json.Decode as Decode
 import Mouse exposing (Position)
 import Keyboard exposing (KeyCode)
 import Color exposing (..)
-import Random as RNG
 
+import ListUtils exposing (..)
+
+-- import hen needed
+--import Debug exposing (log)
 
 
 main =
@@ -27,9 +29,11 @@ type NodeIndex = NodeIndex Int
 nodeIndexAsInt : NodeIndex -> Int
 nodeIndexAsInt (NodeIndex a) = a
 
+
 -- The underlying object being manipulated. This can be a point, line, box, etc.
 -- for now its just a string representing the name of the object
 type alias Object = String
+
 
 -- Object Node
 type alias ObjectNode =
@@ -50,6 +54,7 @@ type alias ObjectTree =
   , drag     : Maybe Drag
   }
 
+
 type alias Drag =
   { nodeid  : NodeIndex -- id of the node being dragged
   , start   : Position
@@ -62,7 +67,7 @@ init =
   let
     node id = ObjectNode ("New Node " ++ (toString id)) (NodeIndex id) 200 50 (Position 0 0) (rgb 0 (50*id % 256) 0)
   in
-    ( { nodes = reposition (List.map node (List.range 0 10))
+    ( { nodes = reposition (List.map node (List.range 0 100))
       , position = Position 0 0
       , drag = Nothing
       }, Cmd.none )
@@ -88,56 +93,36 @@ repositionHelp list x y =
 
 update : Msg -> ObjectTree -> ( ObjectTree, Cmd Msg )
 update msg tree =
-  ( updateHelp msg tree, Cmd.none )
+  let
+    newtree =
+      case msg of
+        DragStart id xy ->
+          { tree | drag = Just (Drag id xy xy) }
 
--- insert element from one place to the destination place in a list
-reinsert : NodeIndex -> NodeIndex -> List ObjectNode -> List ObjectNode
-reinsert from to list =
-  if from == (log "dest is " to) then
-    list
-  else
-    case list of
-      [] -> []
-      node :: rest ->
-        if to == node.id then
-          pushToFront from [] list
-        else if from == node.id then
-          insertAfter to node rest
-        else
-          node :: reinsert from to rest
+        DragAt src Nothing xy ->
+          { tree | drag = (Maybe.map (\{start} -> Drag src start xy) tree.drag) }
 
-insertBefore : NodeIndex -> ObjectNode -> List ObjectNode -> List ObjectNode
-insertBefore targetid insertnode list =
-  case list of
-    [] -> []
-    node :: rest ->
-      if node.id == targetid then
-        insertnode :: list
-      else
-        node :: insertBefore targetid insertnode rest
+        DragEnd src Nothing xy ->
+          { tree | drag = Nothing }
 
-insertAfter : NodeIndex -> ObjectNode -> List ObjectNode -> List ObjectNode
-insertAfter targetid insertnode list =
-  case list of
-    [] -> []
-    node :: rest ->
-      node ::
-        if node.id == targetid then
-          insertnode :: rest
-        else
-          insertAfter targetid insertnode rest
+        DragAt src (Just dest) xy ->
+          let
+            disp =
+              case computeDisplacement src dest tree.nodes of
+                Nothing -> Position 0 0
+                Just d -> d
+          in
+            { tree
+            | nodes = reposition (reinsert .id src dest tree.nodes)
+            , drag = (Maybe.map (\{start} -> Drag src (start +|+ disp) xy) tree.drag) }
 
--- push the node with the given id to the front of the list if found in the list
-pushToFront : NodeIndex -> List ObjectNode -> List ObjectNode -> List ObjectNode
-pushToFront targetid seen remainder =
-  case remainder of
-    [] ->
-      List.reverse seen
-    node :: rest ->
-      if targetid == node.id then
-        node :: ((List.reverse seen) ++ rest)
-      else
-        pushToFront targetid (node::seen) rest
+        DragEnd src (Just dest) xy ->
+          { tree
+            | nodes = reposition (reinsert .id src dest tree.nodes)
+            , drag = Nothing }
+
+  in
+    ( newtree, Cmd.none )
 
 -- return Position 0 0 if not found
 findNodePosition : NodeIndex -> List ObjectNode -> Maybe Position
@@ -163,37 +148,7 @@ computeDisplacement from to nodes =
         computeDisplacement from to rest
 
 
-updateHelp : Msg -> ObjectTree -> ObjectTree
-updateHelp msg tree =
-  case msg of
-    DragStart id xy ->
-      { tree | drag = Just (Drag id xy xy) }
-
-    DragAt src Nothing xy ->
-      { tree | drag = (Maybe.map (\{start} -> Drag src start xy) tree.drag) }
-
-    DragEnd src Nothing xy ->
-      { tree | drag = Nothing }
-
-    DragAt src (Just dest) xy ->
-      let
-        disp =
-          case computeDisplacement src dest tree.nodes of
-            Nothing -> Position 0 0
-            Just d -> d
-      in
-        { tree
-        | nodes = reposition (reinsert src dest tree.nodes)
-        , drag = (Maybe.map (\{start} -> Drag src (start +|+ disp) xy) tree.drag) }
-
-    DragEnd src (Just dest) xy ->
-      { tree
-        | nodes = reposition (reinsert src dest tree.nodes)
-        , drag = Nothing }
-
-
 -- SUBSCRIPTIONS
-
 
 subscriptions : ObjectTree -> Sub Msg
 subscriptions tree =
@@ -201,9 +156,9 @@ subscriptions tree =
     Nothing ->
       Sub.none
 
+    -- subscribe to drag events that don't end up on top of another node
     Just {nodeid} ->
       Sub.batch [ Mouse.moves (DragAt nodeid Nothing), Mouse.ups (DragEnd nodeid Nothing)]
-
 
 
 -- VIEW
@@ -226,15 +181,16 @@ px : Int -> String
 px number =
   toString number ++ "px"
 
+
 layout : ObjectTree -> Html Msg
 layout tree =
   div [] (layoutIter tree)
+
 
 layoutIter : ObjectTree -> List (Html Msg)
 layoutIter tree =
   case tree.nodes of
     [] -> []
-
     node :: rest ->
       let
         nodeView =
@@ -255,6 +211,7 @@ getDraggedPosition node drag =
       else
         node.position
 
+
 -- given a node box and whether something is currently being dragged, create a div for the node
 buildNodeView : ObjectNode -> Maybe Drag -> Html Msg
 buildNodeView node drag =
@@ -267,19 +224,24 @@ buildNodeView node drag =
           if node.id /= nodeid then
             [onMouseUp nodeid node.id, onMouseOver nodeid node.id]
           else []
+
     draggedPosition = getDraggedPosition node drag
+
     zindex =
       case drag of
         Nothing -> "1"
         Just {nodeid} ->
           if node.id /= nodeid then "1" else "5"
+
     rgba = toRgb node.color
+
     rgbaString =
       "rgba("
         ++ (toString rgba.red) ++ ", "
         ++ (toString rgba.green) ++ ", "
         ++ (toString rgba.blue) ++ ", "
         ++ (toString rgba.alpha) ++ ")"
+
     rotation =
       case drag of
         Nothing -> []
@@ -293,52 +255,41 @@ buildNodeView node drag =
       -- Invisible placeholder to catch mouse events
       [ div
           (mouseEvents ++
-          [ style
-            [ "opacity" => "0"
-            , "cursor" => "move"
-
+          [ class "nodeghost"
+          , style
+            [
             , "width" => px node.width
             , "height" => px node.height
-            , "position" => "absolute"
             , "left" => px node.position.x
             , "top" => px node.position.y
-            , "display" => "flex"
-            , "user-select" => "none"
-            , "z-index" => "10"
             ]
           ])
           []
       -- The actual viewable box
       , div
-        [ style
+        [ class "nodebox"
+        , style
           (rotation ++
           [ "background-color" => rgbaString
-          , "cursor" => "move"
-
           , "width" => px node.width
           , "height" => px node.height
-          , "border-radius" => "4px"
-          , "position" => "absolute"
           , "left" => px draggedPosition.x
           , "top" => px draggedPosition.y
-
-          , "color" => "white"
-          , "display" => "flex"
-          , "align-items" => "center"
-          , "justify-content" => "center"
-          , "user-select" => "none"
           , "z-index" => zindex
           ])
         ] [ text node.object ]
       ]
 
+
 onMouseDown : NodeIndex -> Attribute Msg
 onMouseDown id =
   on "mousedown" (Decode.map (DragStart id) Mouse.position)
 
+
 onMouseOver : NodeIndex -> NodeIndex -> Attribute Msg
 onMouseOver srcid destid =
   on "mouseover" (Decode.map (DragAt srcid (Just destid)) Mouse.position)
+
 
 onMouseUp : NodeIndex -> NodeIndex -> Attribute Msg
 onMouseUp srcid destid =
