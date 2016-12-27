@@ -6,6 +6,7 @@ import Json.Decode as Decode
 import Mouse exposing (Position)
 import Keyboard exposing (KeyCode)
 import Color exposing (..)
+import Random
 
 import ListUtils exposing (..)
 import Keys exposing (..)
@@ -64,10 +65,10 @@ type alias ObjectTree =
 
 
 type alias Drag =
-  { nodeid   : NodeIndex -- id of the node being dragged
-  , start    : Position
-  , current  : Position
-  , dragging : Bool -- False if mouse hasn't moved enough to start dragging
+  { draggedNode : ObjectNode
+  , start       : Position
+  , current     : Position
+  , dragging    : Bool -- False if mouse hasn't moved enough to start dragging
   }
 
 
@@ -75,14 +76,18 @@ init : ( ObjectTree, Cmd Msg )
 init =
   let
     node id = 
-      { object   = ("New Node " ++ (toString id))
-      , id       = (NodeIndex id)
-      , width    = 200
-      , height   = 50
-      , position = Position 10 10
-      , color    = rgb 0 (50*id % 256) 0
-      , selected = False
-    }
+      let
+        (h,s) = Random.step (Random.int 10 100) (Random.initialSeed id)
+      in
+        { object   = ("New Node " ++ (toString id))
+        , id       = (NodeIndex id)
+        , width    = 200
+        , height   = h
+        , position = Position 10 10
+        , color    = rgb 0 (50*id % 256) 0
+        , selected = False
+        }
+
     maxId = 3
   in
     ( { nodes = reposition (List.map node (List.range 0 maxId))
@@ -98,9 +103,9 @@ init =
 type Msg
     = NoOp
     -- Drag events
-    | DragStart NodeIndex Position
-    | DragAt NodeIndex (Maybe NodeIndex) Position
-    | DragEnd NodeIndex (Maybe NodeIndex) Position
+    | DragStart ObjectNode Position
+    | DragAt ObjectNode (Maybe ObjectNode) Position
+    | DragEnd ObjectNode (Maybe ObjectNode) Position
     -- New node creation event
     | NewNode String
     -- Multiple selection modes
@@ -115,7 +120,7 @@ repositionHelp list x y =
   case list of
     [] -> []
     node :: rest ->
-      { node | position = Position x y } :: repositionHelp rest x (y+70)
+      { node | position = Position x y } :: repositionHelp rest x (y+node.height)
 
 -- select only the given node index
 selectOne : NodeIndex -> List ObjectNode -> List ObjectNode
@@ -136,8 +141,8 @@ update msg tree =
   let
     newtree =
       case msg of
-        DragStart id xy ->
-          { tree | drag = Just (Drag id xy xy False) }
+        DragStart node xy ->
+          { tree | drag = Just (Drag node xy xy False) }
 
         DragAt src Nothing xy ->
           { tree 
@@ -145,6 +150,23 @@ update msg tree =
               (\{start,dragging} -> Drag src start xy (dragging || (distSquared xy start) > 1))
               tree.drag)
           }
+
+        DragAt src (Just dest) xy ->
+          let
+            newNodes = reposition (reinsert .id src.id dest.id tree.nodes)
+            updateNodePos target nodes =
+              case nodes of
+                [] -> target
+                node :: rest ->
+                  if node.id == target.id then
+                    { target | position = node.position }
+                  else
+                    updateNodePos target rest
+          in
+            { tree
+            | nodes = newNodes
+            , drag = (Maybe.map (\{start,dragging} -> Drag (updateNodePos src newNodes) start xy dragging) tree.drag)
+            }
 
         DragEnd src Nothing xy ->
           let
@@ -155,23 +177,11 @@ update msg tree =
                   if dragging then 
                     tree.nodes
                   else if tree.multiselect then
-                    selectToggle src tree.nodes
+                    selectToggle src.id tree.nodes
                   else
-                    selectOne src tree.nodes
+                    selectOne src.id tree.nodes
           in
             { tree | nodes = updateNodes, drag = Nothing }
-
-        DragAt src (Just dest) xy ->
-          let
-            disp =
-              case computeDisplacement src dest tree.nodes of
-                Nothing -> Position 0 0
-                Just d  -> d
-          in
-            { tree
-            | nodes = reposition (reinsert .id src dest tree.nodes)
-            , drag = (Maybe.map (\{start,dragging} -> Drag src (start +|+ disp) xy dragging) tree.drag)
-            }
 
         DragEnd src (Just dest) xy ->
           { tree | drag = Nothing }
@@ -237,12 +247,12 @@ subscriptions tree =
       Sub.batch [ Mouse.clicks (\_ -> UnselectAll), Keyboard.presses onKeyPress, Keyboard.downs onKeyDown, Keyboard.ups onKeyUp  ]
 
     -- subscribe to drag events that don't end up on top of another node
-    Just {nodeid} ->
-      Sub.batch [ Mouse.moves (DragAt nodeid Nothing), Mouse.ups (DragEnd nodeid Nothing) ]
+    Just {draggedNode} ->
+      Sub.batch [ Mouse.moves (DragAt draggedNode Nothing << subNodePos draggedNode),
+                  Mouse.ups (DragEnd draggedNode Nothing << subNodePos draggedNode) ]
 
 
 -- VIEW
-
 
 (=>) = (,)
 
@@ -251,6 +261,9 @@ zipWithPos f a b = { x = f a.x b.x, y = f a.y b.y }
 
 (+|+) = zipWithPos (+)
 (-|-) = zipWithPos (-)
+
+mapPos : (Int -> Int) -> Position -> Position
+mapPos f p = { x = f p.x, y = f p.y }
 
 dist : Position -> Position -> Float
 dist a b = length (a -|- b)
@@ -296,8 +309,8 @@ getDraggedPosition node drag =
     Nothing -> -- not being dragged
       node.position
 
-    Just {nodeid,start,current} -> -- being dragged
-      if node.id == nodeid then
+    Just {draggedNode, start, current} -> -- being dragged
+      if node.id == draggedNode.id then
         node.position +|+ current -|- start
       else
         node.position
@@ -307,22 +320,40 @@ getDraggedPosition node drag =
 buildNodeView : ObjectNode -> Maybe Drag -> Html Msg
 buildNodeView node drag =
   let
-    mouseEvents =
+    (ghostHeight,ghostY) =
       case drag of
-        Nothing ->
-          [onMouseDown node.id]
-        Just {nodeid} ->
-          if node.id /= nodeid then
-            [onMouseUp nodeid node.id, onMouseOver nodeid node.id]
+        Nothing -> (node.height, node.position.y)
+        Just {draggedNode} ->
+          if node.position.y > draggedNode.position.y then
+            (Basics.min node.height draggedNode.height, node.position.y + (Basics.max 0 (node.height - draggedNode.height)))
+          else if node.position.y < draggedNode.position.y then
+            (Basics.min node.height draggedNode.height, node.position.y)
+          else
+            (node.height, node.position.y)
+
+    mouseEventsUpper =
+      case drag of
+        Nothing     -> [onMouseDown node]
+        Just {draggedNode} ->
+          if node.id /= draggedNode.id then
+            [onMouseUp draggedNode node, onMouseOver draggedNode node]
+          else []
+
+    mouseEventsLower =
+      case drag of
+        Nothing       -> [onMouseDown node]
+        Just {draggedNode} ->
+          if node.id /= draggedNode.id then
+            [onMouseUp draggedNode node, onMouseOver draggedNode node]
           else []
 
     draggedPosition = getDraggedPosition node drag
 
     zindex =
       case drag of
-        Nothing -> "1"
-        Just {nodeid} ->
-          if node.id /= nodeid then "1" else "5"
+        Nothing       -> "1"
+        Just {draggedNode} ->
+          if node.id /= draggedNode.id then "1" else "5"
 
     rgba = toRgb node.color
 
@@ -338,22 +369,22 @@ buildNodeView node drag =
     rotation =
       case drag of
         Nothing -> []
-        Just {nodeid,dragging} ->
-          if node.id == nodeid && dragging then
+        Just {draggedNode,dragging} ->
+          if node.id == draggedNode.id && dragging then
             [ "transform" => "rotate(7deg)" ]
           else
             []
   in
     div []
       -- Invisible placeholder to catch mouse events
-      [ div
-          (mouseEvents ++
+      [ div -- on mouse over, inserts before the current element
+          (mouseEventsUpper ++
           [ class "nodeghost"
           , style
             [ "width" => px node.width
-            , "height" => px node.height
+            , "height" => px ghostHeight
             , "left" => px node.position.x
-            , "top" => px node.position.y
+            , "top" => px ghostY
             ]
           ])
           []
@@ -376,28 +407,32 @@ onKeyDown : KeyCode -> Msg
 onKeyDown code =
   case decode code of
     Just Shift -> MultipleSelect True -- shift key
-    _ -> NoOp
+    _          -> NoOp
 
 onKeyUp : KeyCode -> Msg
 onKeyUp code =
   case decode code of
     Just Shift -> MultipleSelect False -- shift key
-    _ -> NoOp
+    _          -> NoOp
 
 onKeyPress : KeyCode -> Msg
 onKeyPress key =
   case decode key of
     Just CharN -> NewNode "New Node"
-    _   -> NoOp
+    _          -> NoOp
 
-onMouseDown : NodeIndex -> Attribute Msg
-onMouseDown id =
-  on "mousedown" (Decode.map (DragStart id) Mouse.position)
+-- Helper function to subtract out node position
+subNodePos : ObjectNode -> Position -> Position
+subNodePos node p = p -|- node.position
 
-onMouseOver : NodeIndex -> NodeIndex -> Attribute Msg
-onMouseOver srcid destid =
-  on "mouseover" (Decode.map (DragAt srcid (Just destid)) Mouse.position)
+onMouseDown : ObjectNode -> Attribute Msg
+onMouseDown node =
+  on "mousedown" (Decode.map (DragStart node << subNodePos node) Mouse.position)
 
-onMouseUp : NodeIndex -> NodeIndex -> Attribute Msg
-onMouseUp srcid destid =
-  on "mouseup" (Decode.map (DragEnd srcid (Just destid)) Mouse.position)
+onMouseOver : ObjectNode -> ObjectNode -> Attribute Msg
+onMouseOver src dest =
+  on "mouseover" (Decode.map (DragAt src (Just dest) << subNodePos dest) Mouse.position)
+
+onMouseUp : ObjectNode -> ObjectNode -> Attribute Msg
+onMouseUp src dest =
+  on  "mouseup"  (Decode.map (DragEnd src (Just dest) << subNodePos src) Mouse.position)
