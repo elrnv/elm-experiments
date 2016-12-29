@@ -128,14 +128,14 @@ type Msg
     | UnselectAll
 
 reposition : List ObjectNode -> List ObjectNode
-reposition list = repositionHelp list 0 0
+reposition list = repositionHelp 0 0 list 
 
-repositionHelp : List ObjectNode -> Int -> Int -> List ObjectNode
-repositionHelp list x y =
+repositionHelp : Int -> Int -> List ObjectNode -> List ObjectNode
+repositionHelp x y list =
   case list of
     [] -> []
     node :: rest ->
-      { node | position = Position x y } :: repositionHelp rest x (y+node.height)
+      { node | position = Position x y } :: repositionHelp x (y+node.height) rest
 
 -- select only the given node index
 selectOne : NodeIndex -> List ObjectNode -> List ObjectNode
@@ -313,90 +313,92 @@ buildNodeView : ObjectNode -> Maybe Drag -> Html Msg
 buildNodeView node drag =
   let
     nodeHandle = toHandle node
-  in
-    let
-      (ghostHeight,ghostY) =
-        case drag of
-          Nothing           -> (node.height, node.position.y)
-          Just {draggedHandle} ->
-            if node.position.y > draggedHandle.position.y then
-              (Basics.min node.height draggedHandle.height, node.position.y + (Basics.max 0 (node.height - draggedHandle.height)))
-            else if node.position.y < draggedHandle.position.y then
-              (Basics.min node.height draggedHandle.height, node.position.y)
-            else
-              (node.height, node.position.y)
+  in let
+    (ghostHeight,ghostY) =
+      case drag of
+        Nothing ->
+          (node.height, node.position.y)
+        Just {draggedHandle} ->
+          if node.position.y > draggedHandle.position.y then
+            (Basics.min node.height draggedHandle.height, node.position.y + (Basics.max 0 (node.height - draggedHandle.height)))
+          else if node.position.y < draggedHandle.position.y then
+            (Basics.min node.height draggedHandle.height, node.position.y)
+          else
+            (node.height, node.position.y)
 
-      mouseEventsUpper =
-        case drag of
-          Nothing           -> [onMouseDown nodeHandle]
-          Just {draggedHandle} ->
-            if node.id /= draggedHandle.id then
-              [onMouseUp draggedHandle nodeHandle, onMouseOver draggedHandle nodeHandle]
-            else []
+    mouseEventsUpper =
+      case drag of
+        Nothing ->
+          [onMouseDown nodeHandle]
+        Just {draggedHandle} ->
+          if node.id /= draggedHandle.id then
+            [onMouseUp draggedHandle nodeHandle, onMouseOver draggedHandle nodeHandle]
+          else []
 
-      mouseEventsLower =
-        case drag of
-          Nothing           -> [onMouseDown nodeHandle]
-          Just {draggedHandle} ->
-            if node.id /= draggedHandle.id then
-              [onMouseUp draggedHandle nodeHandle, onMouseOver draggedHandle nodeHandle]
-            else []
+    mouseEventsLower =
+      case drag of
+        Nothing ->
+          [onMouseDown nodeHandle]
+        Just {draggedHandle} ->
+          if node.id /= draggedHandle.id then
+            [onMouseUp draggedHandle nodeHandle, onMouseOver draggedHandle nodeHandle]
+          else []
 
-      draggedPosition = getDraggedPosition node drag
+    draggedPosition = getDraggedPosition node drag
 
-      zindex =
-        case drag of
-          Nothing       -> "1"
-          Just {draggedHandle} ->
-            if node.id /= draggedHandle.id then "1" else "5"
+    zindex =
+      case drag of
+        Nothing -> "1"
+        Just {draggedHandle} ->
+          if node.id /= draggedHandle.id then "1" else "5"
 
-      rgba = toRgb node.color
+    rgba = toRgb node.color
 
-      rgbaString =
-        "rgba("
-          ++ (toString rgba.red) ++ ", "
-          ++ (toString rgba.green) ++ ", "
-          ++ (toString rgba.blue) ++ ", "
-          ++ (toString rgba.alpha) ++ ")"
+    rgbaString =
+      "rgba("
+        ++ (toString rgba.red) ++ ", "
+        ++ (toString rgba.green) ++ ", "
+        ++ (toString rgba.blue) ++ ", "
+        ++ (toString rgba.alpha) ++ ")"
 
-      selectedRgbaString = "rgba(255,0,0,255)"
+    selectedRgbaString = "rgba(255,0,0,255)"
 
-      rotation =
-        case drag of
-          Nothing -> []
-          Just {draggedHandle, dragging} ->
-            if node.id == draggedHandle.id && dragging then
-              [ "transform" => "rotate(7deg)" ]
-            else
-              []
-    in
-      div []
-        -- Invisible placeholder to catch mouse events
-        [ div -- on mouse over, inserts before the current element
-            (mouseEventsUpper ++
-            [ class "nodeghost"
-            , style
-              [ "width" => px node.width
-              , "height" => px ghostHeight
-              , "left" => px node.position.x
-              , "top" => px ghostY
-              ]
-            ])
+    rotation =
+      case drag of
+        Nothing -> []
+        Just {draggedHandle, dragging} ->
+          if node.id == draggedHandle.id && dragging then
+            [ "transform" => "rotate(7deg)" ]
+          else
             []
-        -- The actual viewable box
-        , div
-          [ class "nodebox"
+  in
+    div []
+      -- Invisible placeholder to catch mouse events
+      [ div -- on mouse over, inserts before the current element
+          (mouseEventsUpper ++
+          [ class "nodeghost"
           , style
-            (rotation ++
-            [ "background-color" => if node.selected then selectedRgbaString else rgbaString
-            , "width" => px node.width
-            , "height" => px node.height
-            , "left" => px draggedPosition.x
-            , "top" => px draggedPosition.y
-            , "z-index" => zindex
-            ])
-          ] [ text node.object ]
-        ]
+            [ "width" => px node.width
+            , "height" => px ghostHeight
+            , "left" => px node.position.x
+            , "top" => px ghostY
+            ]
+          ])
+          []
+      -- The actual viewable box
+      , div
+        [ class "nodebox"
+        , style
+          (rotation ++
+          [ "background-color" => if node.selected then selectedRgbaString else rgbaString
+          , "width" => px node.width
+          , "height" => px node.height
+          , "left" => px draggedPosition.x
+          , "top" => px draggedPosition.y
+          , "z-index" => zindex
+          ])
+        ] [ text node.object ]
+      ]
 
 onKeyDown : KeyCode -> Msg
 onKeyDown code =
