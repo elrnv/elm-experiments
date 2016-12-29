@@ -40,35 +40,50 @@ mapIndex f (NodeIndex idx) = NodeIndex (f idx)
 -- for now its just a string representing the name of the object
 type alias Object = String
 
+type alias Identified a =
+  { a | id : NodeIndex }
+
+type alias Positioned a =
+  { a | position : Position }
+
+type alias Boxed a =
+  { a | width : Int, height : Int }
 
 -- Object Node
 type alias ObjectNode =
-  { object   : Object
-  , id       : NodeIndex
-  , width    : Int
-  , height   : Int
-  , position : Position
-  , color    : Color
-  , selected : Bool
-  }
+  Identified (Positioned (Boxed
+    { object   : Object
+    , color    : Color
+    , selected : Bool
+    }))
 
 
 -- Object Tree
 type alias ObjectTree =
-  { nodes       : List ObjectNode
-  , position    : Position
-  , maxid       : NodeIndex
-  , multiselect : Bool
-  -- drag state
-  , drag        : Maybe Drag
+  Positioned
+    { nodes       : List ObjectNode
+    , maxid       : NodeIndex
+    , multiselect : Bool
+    -- drag state
+    , drag        : Maybe Drag
+    }
+
+-- Object Handle (used for dragging)
+type alias ObjectHandle = Identified (Positioned (Boxed {}))
+
+toHandle : ObjectNode -> ObjectHandle
+toHandle node = 
+  { id = node.id
+  , position = node.position
+  , width = node.width
+  , height = node.height
   }
 
-
 type alias Drag =
-  { draggedNode : ObjectNode
-  , start       : Position
-  , current     : Position
-  , dragging    : Bool -- False if mouse hasn't moved enough to start dragging
+  { draggedHandle : ObjectHandle
+  , start         : Position
+  , current       : Position
+  , dragging      : Bool -- False if mouse hasn't moved enough to start dragging
   }
 
 
@@ -103,9 +118,9 @@ init =
 type Msg
     = NoOp
     -- Drag events
-    | DragStart ObjectNode Position
-    | DragAt ObjectNode (Maybe ObjectNode) Position
-    | DragEnd ObjectNode (Maybe ObjectNode) Position
+    | DragStart ObjectHandle Position
+    | DragAt ObjectHandle (Maybe ObjectHandle) Position
+    | DragEnd ObjectHandle (Maybe ObjectHandle) Position
     -- New node creation event
     | NewNode String
     -- Multiple selection modes
@@ -141,8 +156,8 @@ update msg tree =
   let
     newtree =
       case msg of
-        DragStart node xy ->
-          { tree | drag = Just (Drag node xy xy False) }
+        DragStart handle xy ->
+          { tree | drag = Just (Drag handle xy xy False) }
 
         DragAt src Nothing xy ->
           { tree 
@@ -154,18 +169,18 @@ update msg tree =
         DragAt src (Just dest) xy ->
           let
             newNodes = reposition (reinsert .id src.id dest.id tree.nodes)
-            updateNodePos target nodes =
+            updateHandlePos handle nodes =
               case nodes of
-                [] -> target
+                [] -> handle
                 node :: rest ->
-                  if node.id == target.id then
-                    { target | position = node.position }
+                  if node.id == handle.id then
+                    { handle | position = node.position }
                   else
-                    updateNodePos target rest
+                    updateHandlePos handle rest
           in
             { tree
             | nodes = newNodes
-            , drag = (Maybe.map (\{start,dragging} -> Drag (updateNodePos src newNodes) start xy dragging) tree.drag)
+            , drag = (Maybe.map (\{start,dragging} -> Drag (updateHandlePos src newNodes) start xy dragging) tree.drag)
             }
 
         DragEnd src Nothing xy ->
@@ -183,7 +198,7 @@ update msg tree =
           in
             { tree | nodes = updateNodes, drag = Nothing }
 
-        DragEnd src (Just dest) xy ->
+        DragEnd _ (Just _) _ ->
           { tree | drag = Nothing }
 
         NewNode title ->
@@ -214,29 +229,6 @@ update msg tree =
   in
     ( newtree, Cmd.none )
 
--- return Position 0 0 if not found
-findNodePosition : NodeIndex -> List ObjectNode -> Maybe Position
-findNodePosition targetid nodes =
-  case nodes of
-    [] -> Nothing
-    node :: rest ->
-      if node.id == targetid then
-        Just node.position
-      else
-        findNodePosition targetid rest
-
-computeDisplacement : NodeIndex -> NodeIndex -> List ObjectNode -> Maybe Position
-computeDisplacement from to nodes =
-  case nodes of
-    [] -> Nothing
-    node :: rest ->
-      if node.id == to then
-        Maybe.map (\posn -> node.position -|- posn) (findNodePosition from rest)
-      else if node.id == from then
-        Maybe.map (\posn -> posn -|- node.position) (findNodePosition to rest)
-      else
-        computeDisplacement from to rest
-
 
 -- SUBSCRIPTIONS
 
@@ -247,9 +239,9 @@ subscriptions tree =
       Sub.batch [ Mouse.clicks (\_ -> UnselectAll), Keyboard.presses onKeyPress, Keyboard.downs onKeyDown, Keyboard.ups onKeyUp  ]
 
     -- subscribe to drag events that don't end up on top of another node
-    Just {draggedNode} ->
-      Sub.batch [ Mouse.moves (DragAt draggedNode Nothing << subNodePos draggedNode),
-                  Mouse.ups (DragEnd draggedNode Nothing << subNodePos draggedNode) ]
+    Just {draggedHandle} ->
+      Sub.batch [ Mouse.moves (DragAt draggedHandle Nothing << subHandlePos draggedHandle),
+                  Mouse.ups (DragEnd draggedHandle Nothing << subHandlePos draggedHandle) ]
 
 
 -- VIEW
@@ -309,8 +301,8 @@ getDraggedPosition node drag =
     Nothing -> -- not being dragged
       node.position
 
-    Just {draggedNode, start, current} -> -- being dragged
-      if node.id == draggedNode.id then
+    Just {draggedHandle, start, current} -> -- being dragged
+      if node.id == draggedHandle.id then
         node.position +|+ current -|- start
       else
         node.position
@@ -320,88 +312,91 @@ getDraggedPosition node drag =
 buildNodeView : ObjectNode -> Maybe Drag -> Html Msg
 buildNodeView node drag =
   let
-    (ghostHeight,ghostY) =
-      case drag of
-        Nothing -> (node.height, node.position.y)
-        Just {draggedNode} ->
-          if node.position.y > draggedNode.position.y then
-            (Basics.min node.height draggedNode.height, node.position.y + (Basics.max 0 (node.height - draggedNode.height)))
-          else if node.position.y < draggedNode.position.y then
-            (Basics.min node.height draggedNode.height, node.position.y)
-          else
-            (node.height, node.position.y)
-
-    mouseEventsUpper =
-      case drag of
-        Nothing     -> [onMouseDown node]
-        Just {draggedNode} ->
-          if node.id /= draggedNode.id then
-            [onMouseUp draggedNode node, onMouseOver draggedNode node]
-          else []
-
-    mouseEventsLower =
-      case drag of
-        Nothing       -> [onMouseDown node]
-        Just {draggedNode} ->
-          if node.id /= draggedNode.id then
-            [onMouseUp draggedNode node, onMouseOver draggedNode node]
-          else []
-
-    draggedPosition = getDraggedPosition node drag
-
-    zindex =
-      case drag of
-        Nothing       -> "1"
-        Just {draggedNode} ->
-          if node.id /= draggedNode.id then "1" else "5"
-
-    rgba = toRgb node.color
-
-    rgbaString =
-      "rgba("
-        ++ (toString rgba.red) ++ ", "
-        ++ (toString rgba.green) ++ ", "
-        ++ (toString rgba.blue) ++ ", "
-        ++ (toString rgba.alpha) ++ ")"
-
-    selectedRgbaString = "rgba(255,0,0,255)"
-
-    rotation =
-      case drag of
-        Nothing -> []
-        Just {draggedNode,dragging} ->
-          if node.id == draggedNode.id && dragging then
-            [ "transform" => "rotate(7deg)" ]
-          else
-            []
+    nodeHandle = toHandle node
   in
-    div []
-      -- Invisible placeholder to catch mouse events
-      [ div -- on mouse over, inserts before the current element
-          (mouseEventsUpper ++
-          [ class "nodeghost"
+    let
+      (ghostHeight,ghostY) =
+        case drag of
+          Nothing           -> (node.height, node.position.y)
+          Just {draggedHandle} ->
+            if node.position.y > draggedHandle.position.y then
+              (Basics.min node.height draggedHandle.height, node.position.y + (Basics.max 0 (node.height - draggedHandle.height)))
+            else if node.position.y < draggedHandle.position.y then
+              (Basics.min node.height draggedHandle.height, node.position.y)
+            else
+              (node.height, node.position.y)
+
+      mouseEventsUpper =
+        case drag of
+          Nothing           -> [onMouseDown nodeHandle]
+          Just {draggedHandle} ->
+            if node.id /= draggedHandle.id then
+              [onMouseUp draggedHandle nodeHandle, onMouseOver draggedHandle nodeHandle]
+            else []
+
+      mouseEventsLower =
+        case drag of
+          Nothing           -> [onMouseDown nodeHandle]
+          Just {draggedHandle} ->
+            if node.id /= draggedHandle.id then
+              [onMouseUp draggedHandle nodeHandle, onMouseOver draggedHandle nodeHandle]
+            else []
+
+      draggedPosition = getDraggedPosition node drag
+
+      zindex =
+        case drag of
+          Nothing       -> "1"
+          Just {draggedHandle} ->
+            if node.id /= draggedHandle.id then "1" else "5"
+
+      rgba = toRgb node.color
+
+      rgbaString =
+        "rgba("
+          ++ (toString rgba.red) ++ ", "
+          ++ (toString rgba.green) ++ ", "
+          ++ (toString rgba.blue) ++ ", "
+          ++ (toString rgba.alpha) ++ ")"
+
+      selectedRgbaString = "rgba(255,0,0,255)"
+
+      rotation =
+        case drag of
+          Nothing -> []
+          Just {draggedHandle, dragging} ->
+            if node.id == draggedHandle.id && dragging then
+              [ "transform" => "rotate(7deg)" ]
+            else
+              []
+    in
+      div []
+        -- Invisible placeholder to catch mouse events
+        [ div -- on mouse over, inserts before the current element
+            (mouseEventsUpper ++
+            [ class "nodeghost"
+            , style
+              [ "width" => px node.width
+              , "height" => px ghostHeight
+              , "left" => px node.position.x
+              , "top" => px ghostY
+              ]
+            ])
+            []
+        -- The actual viewable box
+        , div
+          [ class "nodebox"
           , style
-            [ "width" => px node.width
-            , "height" => px ghostHeight
-            , "left" => px node.position.x
-            , "top" => px ghostY
-            ]
-          ])
-          []
-      -- The actual viewable box
-      , div
-        [ class "nodebox"
-        , style
-          (rotation ++
-          [ "background-color" => if node.selected then selectedRgbaString else rgbaString
-          , "width" => px node.width
-          , "height" => px node.height
-          , "left" => px draggedPosition.x
-          , "top" => px draggedPosition.y
-          , "z-index" => zindex
-          ])
-        ] [ text node.object ]
-      ]
+            (rotation ++
+            [ "background-color" => if node.selected then selectedRgbaString else rgbaString
+            , "width" => px node.width
+            , "height" => px node.height
+            , "left" => px draggedPosition.x
+            , "top" => px draggedPosition.y
+            , "z-index" => zindex
+            ])
+          ] [ text node.object ]
+        ]
 
 onKeyDown : KeyCode -> Msg
 onKeyDown code =
@@ -421,18 +416,19 @@ onKeyPress key =
     Just CharN -> NewNode "New Node"
     _          -> NoOp
 
+
 -- Helper function to subtract out node position
-subNodePos : ObjectNode -> Position -> Position
-subNodePos node p = p -|- node.position
+subHandlePos : ObjectHandle -> Position -> Position
+subHandlePos handle p = p -|- handle.position
 
-onMouseDown : ObjectNode -> Attribute Msg
+onMouseDown : ObjectHandle -> Attribute Msg
 onMouseDown node =
-  on "mousedown" (Decode.map (DragStart node << subNodePos node) Mouse.position)
+  on "mousedown" (Decode.map (DragStart node << subHandlePos node) Mouse.position)
 
-onMouseOver : ObjectNode -> ObjectNode -> Attribute Msg
+onMouseOver : ObjectHandle -> ObjectHandle -> Attribute Msg
 onMouseOver src dest =
-  on "mouseover" (Decode.map (DragAt src (Just dest) << subNodePos dest) Mouse.position)
+  on "mouseover" (Decode.map (DragAt src (Just dest) << subHandlePos dest) Mouse.position)
 
-onMouseUp : ObjectNode -> ObjectNode -> Attribute Msg
+onMouseUp : ObjectHandle -> ObjectHandle -> Attribute Msg
 onMouseUp src dest =
-  on  "mouseup"  (Decode.map (DragEnd src (Just dest) << subNodePos src) Mouse.position)
+  on  "mouseup"  (Decode.map (DragEnd src (Just dest) << subHandlePos src) Mouse.position)
