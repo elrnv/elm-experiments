@@ -8,8 +8,10 @@ import Keyboard exposing (KeyCode)
 import Color exposing (..)
 import Random
 
-import ListUtils exposing (..)
+import ListUtils
+import TreeUtils exposing (..)
 import Keys exposing (..)
+import MultiwayTree as Tree exposing (..)
 
 -- import hen needed
 import Debug exposing (log)
@@ -38,46 +40,45 @@ mapIndex f (NodeIndex idx) = NodeIndex (f idx)
 
 -- The underlying object being manipulated. This can be a point, line, box, etc.
 -- for now its just a string representing the name of the object
-type alias Object = String
+type alias Object
+  = (Identified (Positioned (Boxed
+      { name     : String
+      , color    : Color
+      , selected : Bool
+      })))
 
-type alias Identified a =
-  { a | id : NodeIndex }
+type alias Identified a
+  = { a | id : NodeIndex }
 
-type alias Positioned a =
-  { a | position : Position }
+type alias Positioned a
+  = { a | position : Position }
 
-type alias Boxed a =
-  { a | width : Int, height : Int }
+type alias Boxed a
+  = { a | width : Int, height : Int }
 
--- Object Node
-type alias ObjectNode =
-  Identified (Positioned (Boxed
-    { object   : Object
-    , color    : Color
-    , selected : Bool
-    }))
-
-
--- Object Tree
 type alias ObjectTree =
-  Positioned
-    { nodes       : List ObjectNode
+    { root        : ObjectNode
     , maxid       : NodeIndex
     , multiselect : Bool
     -- drag state
     , drag        : Maybe Drag
     }
 
+type alias ObjectNode = Tree Object
+
 -- Object Handle (used for dragging)
 type alias ObjectHandle = Identified (Positioned (Boxed {}))
 
 toHandle : ObjectNode -> ObjectHandle
 toHandle node = 
-  { id = node.id
-  , position = node.position
-  , width = node.width
-  , height = node.height
-  }
+  let
+    obj = datum node
+  in
+    { id       = obj.id
+    , position = obj.position
+    , width    = obj.width
+    , height   = obj.height
+    }
 
 type alias Drag =
   { draggedHandle : ObjectHandle
@@ -87,26 +88,40 @@ type alias Drag =
   }
 
 
+-- INIT
+
 init : ( ObjectTree, Cmd Msg )
 init =
   let
-    node id = 
+    node id name children = 
       let
         (h,s) = Random.step (Random.int 10 100) (Random.initialSeed id)
       in
-        { object   = ("New Node " ++ (toString id))
-        , id       = (NodeIndex id)
-        , width    = 200
-        , height   = h
-        , position = Position 10 10
-        , color    = rgb 0 (50*id % 256) 0
-        , selected = False
-        }
-
-    maxId = 3
+        Tree
+          { id       = (NodeIndex id)
+          , position = Position 0 0 -- dummy position
+          , width    = 200
+          , height   = h
+          , name     = (str ++ (toString id))
+          , color    = rgb 0 (50*id % 256) 0
+          , selected = False
+          } children
+    maxId = 8
   in
-    ( { nodes = reposition (List.map node (List.range 0 maxId))
-      , position = Position 0 0
+    ( { root 
+        = reposition 
+          ( node 0 "alpha"
+            [ node 1 "beta" []
+            , node 2 "gamma" 
+              [ node 3 "gamma.a"
+              , node 4 "gamma.b"
+              , node 5 "gamma.c"
+              ]
+            , node 6 "delta" 
+              [ node 7 "delta.a"
+              , node 8 "delta.b"
+              ]
+            ] )
       , maxid = NodeIndex maxId
       , multiselect = False
       , drag = Nothing
@@ -122,110 +137,132 @@ type Msg
     | DragAt ObjectHandle (Maybe ObjectHandle) Position
     | DragEnd ObjectHandle (Maybe ObjectHandle) Position
     -- New node creation event
-    | NewNode String
+    --| NewNode String
     -- Multiple selection modes
     | MultipleSelect Bool
     | UnselectAll
 
-reposition : List ObjectNode -> List ObjectNode
-reposition list = repositionHelp 0 0 list 
+indent = 10
 
-repositionHelp : Int -> Int -> List ObjectNode -> List ObjectNode
-repositionHelp x y list =
+reposition : ObjectNode -> ObjectNode
+reposition tree = repositionHelp 0 0 tree
+
+repositionTree : Int -> Int -> ObjectNode -> ObjectNode
+repositionTree x y (Tree object children) =
+  Tree { object | position = Position x y } (repositionList (x + indent) (y + object.height) children)
+
+repositionList : Int -> Int -> List ObjectNode -> List ObjectNode
+repositionList x y list =
   case list of
     [] -> []
     node :: rest ->
-      { node | position = Position x y } :: repositionHelp x (y+node.height) rest
+      let
+        obj = datum node
+      in
+        repositionTree x y node :: repositionList x (y + obj.height) rest
 
 -- select only the given node index
-selectOne : NodeIndex -> List ObjectNode -> List ObjectNode
+selectOne : NodeIndex -> ObjectNode -> ObjectNode
 selectOne targetid =
-  List.map (\node -> { node | selected = node.id == targetid })
+  Tree.map (\obj -> { obj | selected = obj.id == targetid })
 
 -- toggle selection of the target Node
-selectToggle : NodeIndex -> List ObjectNode -> List ObjectNode
+selectToggle : NodeIndex -> ObjectNode -> ObjectNode
 selectToggle targetid =
-  List.map (\node -> 
-    { node | selected = node.selected |> xor (node.id == targetid) })
+  Tree.map (\obj -> 
+    { obj | selected = obj.selected |> xor (obj.id == targetid) })
 
-unselectAll : List ObjectNode -> List ObjectNode
-unselectAll = List.map (\node -> { node | selected = False })
+unselectAll : ObjectNode -> ObjectNode
+unselectAll = Tree.map (\obj -> { obj | selected = False })
 
 update : Msg -> ObjectTree -> ( ObjectTree, Cmd Msg )
-update msg tree =
+update msg objtree =
   let
     newtree =
       case msg of
         DragStart handle xy ->
-          { tree | drag = Just (Drag handle xy xy False) }
+          { objtree | drag = Just (Drag handle xy xy False) }
 
         DragAt src Nothing xy ->
-          { tree 
+          { objtree 
           | drag = (Maybe.map 
               (\{start,dragging} -> Drag src start xy (dragging || (distSquared xy start) > 1))
-              tree.drag)
+              objtree.drag)
           }
 
         DragAt src (Just dest) xy ->
           let
-            newNodes = reposition (reinsert .id src.id dest.id tree.nodes)
-            updateHandlePos handle nodes =
-              case nodes of
-                [] -> handle
-                node :: rest ->
-                  if node.id == handle.id then
-                    { handle | position = node.position }
-                  else
-                    updateHandlePos handle rest
+            newRoot = reposition (reinsert (.id << datum) src.id dest.id objtree.root)
+            updateHandlePos handle (Tree obj children) =
+              let
+                updateHandlePosInList handle list =
+                  case list of
+                    [] -> Nothing
+                    node :: rest ->
+                      case updateHandlePos handle node of
+                        Nothing -> updateHandlePos handle 
+                        Just updatedHandle -> Just updatedHandle
+              in
+                if obj.id == handle.id then
+                  Just { handle | position = node.position }
+                else
+                  updateHandlePosInList handle children
           in
-            { tree
-            | nodes = newNodes
-            , drag = (Maybe.map (\{start,dragging} -> Drag (updateHandlePos src newNodes) start xy dragging) tree.drag)
+            { objtree
+            | root = newRoot
+            , drag = (Maybe.map (\{start,dragging} ->
+              let
+                unwrapHandleUpdate maybeHandle =
+                  case maybeHandle of
+                    Nothing -> handle
+                    Just handle -> handle
+                  
+                Drag (updateHandlePos src newRoot) start xy dragging) objtree.drag)
             }
 
         DragEnd src Nothing xy ->
           let
             updateNodes =
-              case tree.drag of
-                Nothing         -> tree.nodes
+              case objtree.drag of
+                Nothing         -> objtree.nodes
                 Just {dragging} -> 
                   if dragging then 
-                    tree.nodes
-                  else if tree.multiselect then
-                    selectToggle src.id tree.nodes
+                    objtree.nodes
+                  else if objtree.multiselect then
+                    selectToggle src.id objtree.nodes
                   else
-                    selectOne src.id tree.nodes
+                    selectOne src.id objtree.nodes
           in
-            { tree | nodes = updateNodes, drag = Nothing }
+            { objtree | nodes = updateNodes, drag = Nothing }
 
         DragEnd _ (Just _) _ ->
-          { tree | drag = Nothing }
+          { objtree | drag = Nothing }
 
-        NewNode title ->
+        {- NewNode title ->
           let
-            newMaxId = incrementIndex tree.maxid
+            newMaxId = incrementIndex objtree.maxid
           in
-            { tree
+            { objtree
               | nodes =
                 reposition
-                  ({ object  = title ++ " " ++ toString (nodeIndexToInt newMaxId)
+                  ({ name    = title ++ " " ++ toString (nodeIndexToInt newMaxId)
                   , id       = newMaxId
                   , width    = 200
                   , height   = 50
                   , position = Position 0 0
                   , color    = rgb 0 (50 * (nodeIndexToInt newMaxId) % 256) 0
                   , selected = False
-                  } :: tree.nodes)
+                  } :: objtree.nodes)
               , maxid = newMaxId
-            }
+            }-}
 
         MultipleSelect enable -> -- toggle multiple selection
-          { tree | multiselect = enable }
+          { objtree | multiselect = enable }
 
         UnselectAll ->
-          { tree | nodes = unselectAll tree.nodes }
+          { objtree | nodes = unselectAll objtree.nodes }
 
-        NoOp -> tree
+        NoOp -> objtree
   in
     ( newtree, Cmd.none )
 
@@ -245,6 +282,10 @@ subscriptions tree =
 
 
 -- VIEW
+
+view : ObjectTree -> Html Msg
+view tree =
+    lazy layout tree
 
 (=>) = (,)
 
@@ -269,14 +310,9 @@ length p = p |> lengthSquared |> toFloat |> sqrt
 lengthSquared : Position -> Int
 lengthSquared {x,y} = x*x + y*y
 
-view : ObjectTree -> Html Msg
-view tree =
-    lazy layout tree
-
 px : Int -> String
 px number =
   toString number ++ "px"
-
 
 layout : ObjectTree -> Html Msg
 layout tree =
@@ -397,7 +433,7 @@ buildNodeView node drag =
           , "top" => px draggedPosition.y
           , "z-index" => zindex
           ])
-        ] [ text node.object ]
+        ] [ text node.name   ]
       ]
 
 onKeyDown : KeyCode -> Msg

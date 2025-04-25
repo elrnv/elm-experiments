@@ -1,4 +1,4 @@
-module ListUtils exposing (..)
+module ListUtils exposing (reinsert)
 {-| This Module contains all utility functions we might need that are missing from the standard
 -}
 
